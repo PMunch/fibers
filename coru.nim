@@ -1,58 +1,45 @@
 type
-  #Future = ref object
-  #  current: Test
-  #  next: Test
-  Test = iterator () {.closure.}
-  AsyncContext = ref object
-    next: Test
+  Fiber = iterator() {.closure.}
   Future[T] = ref object
+    cur: Fiber
+    next: ptr Fiber
     retval: T
 
-proc createInner(cont: AsyncContext): Future[int] =
-  var res = new Future[int]
-  cont.next = iterator() =
-    echo "From inner"
-    res.retval = 42
-    yield
-    cont.next = iterator() =
-      echo "From inner"
-    yield
-    cont.next = iterator() =
-      echo "From inner"
-    yield
-    cont.next = iterator() =
-      echo "From inner"
-    yield
-  return res
+proc createInner(): Future[int] =
+  var ret = new Future[int]
+  ret.cur = iterator() =
+    echo "Hello from inner fiber"
+    ret.retval = 42
+  return ret
 
-
-proc createTest(cont: AsyncContext): Future[string] =
-  var res = new Future[string]
-  cont.next = iterator () =
-    echo "From test"
-    var fut = createInner(cont)
-    var next = cont.next
-    while not next.finished:
-      yield
-    echo "Back in test, returned: ", fut.retval
-    res.retval = "Return?"
-  return res
+proc createAsync(): Future[string] =
+  var ret = new Future[string]
+  ret.cur = iterator() =
+    echo "Hello from fiber"
+    var fib = createInner()
+    ret.next[] = fib.cur
+    fib.next = ret.next
+    yield
+    ret.retval = "All done! Result: " & $fib.retval
+  return ret
 
 import lists
-var
-  evQueue: DoublyLinkedList[Test]
-  asyncContext = new AsyncContext
-var res = asyncContext.createTest()
-evQueue.append asyncContext.next
-while evQueue.head != nil:
-  echo "tick"
-  var first = evQueue.head
-  evQueue.remove first
-  first.value()
-  if asyncContext.next != nil:
-    evQueue.append asyncContext.next
-    asyncContext.next = nil
-  if not first.value.finished:
-    evQueue.append first
 
-echo "Returned ", res.retval
+var
+  async = createAsync()
+  fiberQueue = initDoublyLinkedList[Fiber]()
+  fiber: Fiber
+async.next = fiber.addr
+fiberQueue.append async.cur
+while fiberQueue.head != nil:
+  let cur = fiberQueue.head
+  fiberQueue.remove cur
+  cur.value() # This runs an iteration
+  if fiber != nil:
+    fiberQueue.append fiber
+    fiber = nil
+  if not cur.value.finished:
+    fiberQueue.append cur
+
+# The return value of our future should now be set
+echo async.retval
