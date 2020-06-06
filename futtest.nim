@@ -1,48 +1,50 @@
-import macros, lists
+import macros, lists, options
 
 type
   Fiber = iterator() {.closure.}
   Future[T] = ref object
     cur: Fiber
     next: ptr Fiber
-    retval: T
+    retval: Option[T]
+
+# Four states:
+# Busy: neither next nor retval set to a value.
+# Waiting: next set, but not retval. next should be completed before control returns.
+# Sent: next and retval set, next should be run before control returns (but not neccesarilly completed).
+# Produced: retval set, but not next. Should run anything that listened to us.
 
 template await(fiber: untyped): untyped =
   block:
+    assert ret.retval.isNone
     var fib = fiber()
     ret.next[] = fib.cur
     fib.next = ret.next
     yield
-    fib.retval
+    fib.retval.get()
+
+template produce(value: untyped): untyped =
+  ret.retval = some(value)
+  yield
+
+template asyncImpl(body: untyped, typ: untyped): untyped =
+  var ret {.inject.} = new Future[typ]
+  ret.cur = iterator() =
+    body
+  return ret
 
 macro async(procDef: untyped): untyped =
-  echo procDef.treeRepr
+  result = procDef
+  assert $procDef[3][0][0] == "Future"
+  result[6] = getAst(asyncImpl(procDef[6], procDef[3][0][1]))
 
-dumpTree:
-  var ret = new Future[int]
-  ret.cur = iterator() =
-    echo "Hello from inner fiber"
-    ret.retval = 42
-  return ret
-
-proc createInner2(): Future[int] {.async.} =
+proc createInner(): Future[int] {.async.} =
   echo "Hello from inner fiber"
-  return 42
+  produce 42
 
-proc createInner(): Future[int] =
-  var ret = new Future[int]
-  ret.cur = iterator() =
-    echo "Hello from inner fiber"
-    ret.retval = 42
-  return ret
-
-proc createAsync(): Future[string] =
-  var ret = new Future[string]
-  ret.cur = iterator() =
-    echo "Hello from fiber"
-    let retval = await createInner
-    ret.retval = "All done! Result: " & $retval
-  return ret
+proc createAsync(): Future[string] {.async.} =
+  echo "Hello from fiber"
+  var retval = await createInner
+  produce "All done! Result: " & $retval
 
 var
   fut = createAsync()
@@ -53,6 +55,7 @@ fiberQueue.append fut.cur
 while fiberQueue.head != nil:
   let cur = fiberQueue.head
   fiberQueue.remove cur
+  echo "tick"
   cur.value() # This runs an iteration
   if fiber != nil:
     fiberQueue.append fiber
@@ -61,4 +64,4 @@ while fiberQueue.head != nil:
     fiberQueue.append cur
 
 # The return value of our future should now be set
-echo fut.retval
+echo fut.retval.get()
